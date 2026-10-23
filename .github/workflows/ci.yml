@@ -1,0 +1,87 @@
+name: greptimedb-rs CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+  CARGO_BUILD_JOBS: '2'
+  CMAKE_BUILD_PARALLEL_LEVEL: '2'
+  RUST_BACKTRACE: '1'
+  RUST_TEST_THREADS: '1'
+  GREPTIMEDB_E2E_REQUIRED: '1'
+
+jobs:
+  ci:
+    name: fmt, clippy, test, docs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v5
+
+      - name: Configure optional deploy keys for Git dependencies
+        env:
+          GRPC_RS_DEPLOY_KEY: ${{ secrets.GRPC_RS_DEPLOY_KEY }}
+        run: |
+          dir="$RUNNER_TEMP/greptimedb-rs-private-git-deps"
+          mkdir -p "$dir" && chmod 700 "$dir"
+          printf '%s\n' 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' > "$dir/known_hosts"
+          : > "$dir/ssh_config"
+          count=0
+          if [ -n "${GRPC_RS_DEPLOY_KEY:-}" ]; then
+            printf '%s\n' "$GRPC_RS_DEPLOY_KEY" > "$dir/grpc-rs"
+            chmod 600 "$dir/grpc-rs"
+            cat >> "$dir/ssh_config" <<EOF
+          Host github-grpc-rs
+            HostName github.com
+            User git
+            IdentityFile $dir/grpc-rs
+            IdentitiesOnly yes
+            UserKnownHostsFile $dir/known_hosts
+            StrictHostKeyChecking yes
+          EOF
+            echo "GIT_CONFIG_KEY_${count}=url.git@github-grpc-rs:trunkszi/grpc-rs.git.insteadOf" >> "$GITHUB_ENV"
+            echo "GIT_CONFIG_VALUE_${count}=https://github.com/trunkszi/grpc-rs.git" >> "$GITHUB_ENV"
+            count=$((count + 1))
+          fi
+          if [ "$count" -gt 0 ]; then
+            echo "GIT_CONFIG_COUNT=$count" >> "$GITHUB_ENV"
+            echo "GIT_SSH_COMMAND=ssh -F $dir/ssh_config" >> "$GITHUB_ENV"
+          fi
+
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes build-essential cmake pkg-config libclang-dev protobuf-compiler
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache Cargo registry and build output
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace --locked
+
+      - name: Documentation
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
