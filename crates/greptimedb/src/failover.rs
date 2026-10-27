@@ -36,6 +36,51 @@ pub struct FailoverEvent {
     pub attempt: usize,
 }
 
+/// Clock-independent circuit phase. [`CircuitPhase::HalfOpenProbe`] is the same
+/// open circuit once `circuit_breaker_cooldown` has elapsed.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CircuitPhase {
+    /// No outstanding failures. The endpoint may be selected.
+    #[default]
+    ClosedHealthy = 0,
+    /// The circuit is closed, but a failure has been recorded since the last success.
+    ClosedDegraded = 1,
+    /// Cooldown has elapsed. The next selection is a single health probe.
+    HalfOpenProbe = 2,
+    /// The failure threshold was reached and cooldown has not elapsed.
+    OpenCooldown = 3,
+}
+
+/// Eligibility of a [`CircuitPhase`], independent of which closed or open leaf is active.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CircuitSuperstate {
+    /// `ClosedHealthy`, `ClosedDegraded`, or `HalfOpenProbe`.
+    Eligible = 0,
+    /// `OpenCooldown`.
+    Ineligible = 1,
+}
+
+impl CircuitPhase {
+    /// Superstate used by selection. Only [`CircuitSuperstate::Eligible`] phases are candidates.
+    #[must_use]
+    pub const fn superstate(self) -> CircuitSuperstate {
+        match self {
+            Self::ClosedHealthy | Self::ClosedDegraded | Self::HalfOpenProbe => {
+                CircuitSuperstate::Eligible
+            }
+            Self::OpenCooldown => CircuitSuperstate::Ineligible,
+        }
+    }
+
+    /// Whether selection may return this endpoint.
+    #[must_use]
+    pub const fn is_eligible(self) -> bool {
+        matches!(self.superstate(), CircuitSuperstate::Eligible)
+    }
+}
+
 /// Circuit and latency state for one endpoint.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EndpointHealthState {
@@ -56,6 +101,35 @@ impl EndpointHealthState {
             circuit_opened_at: None,
             ewma_rtt_us: 0,
             healthy: true,
+        }
+    }
+
+    /// Phase implied by this sample at `now`.
+    ///
+    /// An open timestamp stays in cooldown until `cooldown` elapses, then becomes
+    /// one half-open probe. Without an open timestamp the circuit stays closed:
+    /// a clean sample is healthy, and failures at or above `threshold` stay
+    /// degraded until a failure record stamps the open timestamp.
+    #[inline]
+    #[must_use]
+    pub fn phase(&self, threshold: u32, cooldown: Duration, now: Instant) -> CircuitPhase {
+        if let Some(opened) = self.circuit_opened_at {
+            let cooling = opened
+                .checked_add(cooldown)
+                .is_none_or(|deadline| now < deadline);
+            if cooling {
+                CircuitPhase::OpenCooldown
+            } else {
+                CircuitPhase::HalfOpenProbe
+            }
+        } else if threshold > 0 && self.consecutive_failures >= threshold {
+            // Cooldown starts only from `circuit_opened_at`. Failure count alone
+            // stays closed, so a later threshold leaves this endpoint eligible.
+            CircuitPhase::ClosedDegraded
+        } else if self.consecutive_failures == 0 && self.healthy {
+            CircuitPhase::ClosedHealthy
+        } else {
+            CircuitPhase::ClosedDegraded
         }
     }
 }
@@ -92,6 +166,8 @@ pub struct FailoverPolicy {
     rng: u64,
     on_failover: Option<FailoverObserver>,
     health: Vec<EndpointHealthState>,
+    /// Reused eligible indexes. Selection clears this instead of allocating a new list.
+    eligible_scratch: Vec<usize>,
     cursor: usize,
     current: Option<usize>,
 }
@@ -114,6 +190,7 @@ impl FailoverPolicy {
             .iter()
             .map(|_| EndpointHealthState::fresh())
             .collect();
+        let eligible_scratch = Vec::with_capacity(endpoints.len());
         Self {
             endpoints,
             selection: EndpointSelection::RoundRobin,
@@ -124,6 +201,7 @@ impl FailoverPolicy {
             rng: DEFAULT_SEED,
             on_failover: None,
             health,
+            eligible_scratch,
             cursor: 0,
             current: None,
         }
@@ -229,7 +307,9 @@ impl FailoverPolicy {
         if self.selection == EndpointSelection::Sticky
             && let Some(current) = self.current
             && !excluded.contains(&current)
-            && self.is_available(current, now)
+            && self
+                .endpoint_phase(current, now)
+                .is_some_and(CircuitPhase::is_eligible)
         {
             return Ok(current);
         }
@@ -239,7 +319,7 @@ impl FailoverPolicy {
             EndpointSelection::Sticky => self.current.map(|index| (index + 1) % count).unwrap_or(0),
             _ => self.cursor % count,
         };
-        let mut available = Vec::with_capacity(count);
+        self.eligible_scratch.clear();
         let mut examined = 0usize;
         for step in 0..count {
             let index = (origin + step) % count;
@@ -247,38 +327,64 @@ impl FailoverPolicy {
                 continue;
             }
             examined += 1;
-            if self.is_available(index, now) {
-                available.push(index);
+            if self
+                .endpoint_phase(index, now)
+                .is_some_and(CircuitPhase::is_eligible)
+            {
+                self.eligible_scratch.push(index);
             }
         }
-        if available.is_empty() {
+        if self.eligible_scratch.is_empty() {
             return Err(self.exhausted(examined, (origin + examined.saturating_sub(1)) % count));
         }
 
         let chosen = match self.selection {
             EndpointSelection::Random => {
                 let draw = self.next_random();
-                available[usize::try_from(draw % available.len() as u64).unwrap_or(0)]
+                let len = self.eligible_scratch.len();
+                let slot =
+                    usize::try_from(draw % u64::try_from(len).unwrap_or(u64::MAX)).unwrap_or(0);
+                self.eligible_scratch[slot]
             }
-            EndpointSelection::LatencyAware => lowest_latency(&self.health, &available),
-            EndpointSelection::RoundRobin | EndpointSelection::Sticky => available[0],
+            EndpointSelection::LatencyAware => lowest_latency(&self.health, &self.eligible_scratch),
+            EndpointSelection::RoundRobin | EndpointSelection::Sticky => self.eligible_scratch[0],
         };
         self.commit_selection(chosen, examined, now);
         Ok(chosen)
     }
 
     /// Bind configured endpoint display names without resetting health.
+    ///
+    /// The caller keeps the endpoint count fixed, so the eligible scratch sized
+    /// in [`Self::new`] already covers every index.
     pub(crate) fn bind_endpoints(&mut self, endpoints: Vec<String>) {
         self.endpoints = endpoints;
+    }
+
+    /// Circuit phase derived from this endpoint's health at `now`.
+    #[inline]
+    #[must_use]
+    pub fn endpoint_phase(&self, index: usize, now: Instant) -> Option<CircuitPhase> {
+        self.health.get(index).map(|state| {
+            state.phase(
+                self.circuit_breaker_threshold,
+                self.circuit_breaker_cooldown,
+                now,
+            )
+        })
+    }
+
+    /// Circuit phase of one endpoint after applying cooldown at `now`.
+    #[inline]
+    #[must_use]
+    pub fn circuit_phase(&self, index: usize, now: Instant) -> Option<CircuitPhase> {
+        self.endpoint_phase(index, now)
     }
 
     /// Whether an available endpoint requires a half-open health probe.
     #[must_use]
     pub fn needs_probe(&self, index: usize, now: Instant) -> bool {
-        self.health
-            .get(index)
-            .is_some_and(|state| state.circuit_opened_at.is_some())
-            && self.is_available(index, now)
+        self.circuit_phase(index, now) == Some(CircuitPhase::HalfOpenProbe)
     }
 
     /// Record a dial without clearing circuit history or sampling RPC latency.
@@ -292,11 +398,12 @@ impl FailoverPolicy {
 
     /// Admit a successful half-open health probe without changing RPC latency.
     pub fn record_probe_success(&mut self, index: usize) {
-        if let Some(state) = self.health.get_mut(index) {
-            state.healthy = true;
-            state.consecutive_failures = 0;
-            state.circuit_opened_at = None;
-        }
+        let Some(state) = self.health.get_mut(index) else {
+            return;
+        };
+        state.healthy = true;
+        state.consecutive_failures = 0;
+        state.circuit_opened_at = None;
     }
 
     /// Record successful stream completion without sampling unary latency.
@@ -329,9 +436,9 @@ impl FailoverPolicy {
         };
         state.consecutive_failures = state.consecutive_failures.saturating_add(1);
         state.healthy = false;
-        if state.circuit_opened_at.is_some()
-            || (threshold > 0 && state.consecutive_failures >= threshold)
-        {
+        let open = state.circuit_opened_at.is_some()
+            || (threshold > 0 && state.consecutive_failures >= threshold);
+        if open {
             state.circuit_opened_at = Some(now);
         }
     }
@@ -406,19 +513,13 @@ impl FailoverPolicy {
         &self.endpoints
     }
 
-    fn is_available(&self, idx: usize, now: Instant) -> bool {
-        match self.health[idx].circuit_opened_at {
-            None => true,
-            Some(opened) => opened
-                .checked_add(self.circuit_breaker_cooldown)
-                .is_some_and(|deadline| now >= deadline),
-        }
-    }
-
     fn commit_selection(&mut self, chosen: usize, examined: usize, now: Instant) {
         let previous = self.current.replace(chosen);
         let count = self.endpoints.len();
         self.cursor = (chosen + 1) % count;
+        if self.on_failover.is_none() {
+            return;
+        }
         let Some(from) = previous.filter(|index| *index != chosen) else {
             return;
         };
@@ -473,6 +574,7 @@ impl Clone for FailoverPolicy {
             rng: self.rng,
             on_failover: self.on_failover.clone(),
             health: self.health.clone(),
+            eligible_scratch: self.eligible_scratch.clone(),
             cursor: self.cursor,
             current: self.current,
         }
