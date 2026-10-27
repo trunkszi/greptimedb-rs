@@ -4,6 +4,9 @@ use crate::types::{ColumnDataType, Decimal128, SemanticType, ValueRef};
 use greptimedb_proto::v1::{Column, column::Values};
 use std::{error::Error, fmt};
 
+/// Set bit for each position inside a null-mask byte.
+const NULL_BIT: [u8; 8] = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80];
+
 /// Little-endian null bits: a set bit represents a null row.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct NullMask {
@@ -20,20 +23,34 @@ impl NullMask {
         }
     }
 
+    #[inline(always)]
     pub fn push(&mut self, is_null: bool) {
-        if self.row_count.is_multiple_of(8) {
-            self.bytes.push(0);
+        let row = self.row_count;
+        let byte_index = row >> 3;
+        if byte_index == self.bytes.len() {
+            self.reserve_mask_byte();
         }
         if is_null {
-            self.bytes[self.row_count / 8] |= 1 << (self.row_count % 8);
+            self.bytes[byte_index] |= NULL_BIT[row & 7];
             self.null_count += 1;
         }
-        self.row_count += 1;
+        self.row_count = row + 1;
+    }
+
+    /// Grow the mask by a cache-line chunk when the next byte has no spare capacity.
+    #[inline(never)]
+    fn reserve_mask_byte(&mut self) {
+        if self.bytes.len() == self.bytes.capacity() {
+            let grow = self.bytes.capacity().max(64);
+            self.bytes.reserve(grow);
+        }
+        self.bytes.push(0);
     }
 
     /// Returns false for an index outside the buffered rows.
+    #[inline(always)]
     pub fn is_null(&self, row: usize) -> bool {
-        row < self.row_count && self.bytes[row / 8] & (1 << (row % 8)) != 0
+        row < self.row_count && self.bytes[row >> 3] & NULL_BIT[row & 7] != 0
     }
 
     pub fn row_count(&self) -> usize {
@@ -165,6 +182,19 @@ fn size_of_val_element<T>(_: &[T]) -> usize {
     size_of::<T>()
 }
 
+/// Append one fixed-width value into spare capacity without calling the reallocating push path.
+#[inline(always)]
+fn push_copy<T: Copy>(values: &mut Vec<T>, value: T) {
+    if let Some(slot) = values.spare_capacity_mut().first_mut() {
+        slot.write(value);
+        // SAFETY: `slot` is the next element of this allocation, and `write` initialized it.
+        // The updated length remains within capacity.
+        unsafe { values.set_len(values.len() + 1) };
+    } else {
+        values.push(value);
+    }
+}
+
 /// A failed append leaves both values and null-mask rows unchanged.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ColumnBufError {
@@ -266,19 +296,23 @@ impl TypedColumnBuf {
             return Ok(());
         }
         match (&mut self.values, self.data_type, value) {
-            (TypedValues::Bools(v), ColumnDataType::Boolean, ValueRef::Boolean(x)) => v.push(x),
-            (TypedValues::I8(v), ColumnDataType::Int8, ValueRef::Int8(x)) => v.push(x),
-            (TypedValues::I16(v), ColumnDataType::Int16, ValueRef::Int16(x)) => v.push(x),
-            (TypedValues::I32(v), ColumnDataType::Int32, ValueRef::Int32(x)) => v.push(x),
-            (TypedValues::I64(v), ColumnDataType::Int64, ValueRef::Int64(x)) => v.push(x),
-            (TypedValues::U8(v), ColumnDataType::Uint8, ValueRef::Uint8(x)) => v.push(x),
-            (TypedValues::U16(v), ColumnDataType::Uint16, ValueRef::Uint16(x)) => v.push(x),
-            (TypedValues::U32(v), ColumnDataType::Uint32, ValueRef::Uint32(x)) => v.push(x),
-            (TypedValues::U64(v), ColumnDataType::Uint64, ValueRef::Uint64(x)) => v.push(x),
-            (TypedValues::F32(v), ColumnDataType::Float32, ValueRef::Float32(x)) => v.push(x),
-            (TypedValues::F64(v), ColumnDataType::Float64, ValueRef::Float64(x)) => v.push(x),
-            (TypedValues::I32(v), ColumnDataType::Date, ValueRef::Date(x)) => v.push(x.0),
-            (TypedValues::I64(v), ColumnDataType::DateTime, ValueRef::DateTime(x)) => v.push(x.0),
+            (TypedValues::Bools(v), ColumnDataType::Boolean, ValueRef::Boolean(x)) => {
+                push_copy(v, x)
+            }
+            (TypedValues::I8(v), ColumnDataType::Int8, ValueRef::Int8(x)) => push_copy(v, x),
+            (TypedValues::I16(v), ColumnDataType::Int16, ValueRef::Int16(x)) => push_copy(v, x),
+            (TypedValues::I32(v), ColumnDataType::Int32, ValueRef::Int32(x)) => push_copy(v, x),
+            (TypedValues::I64(v), ColumnDataType::Int64, ValueRef::Int64(x)) => push_copy(v, x),
+            (TypedValues::U8(v), ColumnDataType::Uint8, ValueRef::Uint8(x)) => push_copy(v, x),
+            (TypedValues::U16(v), ColumnDataType::Uint16, ValueRef::Uint16(x)) => push_copy(v, x),
+            (TypedValues::U32(v), ColumnDataType::Uint32, ValueRef::Uint32(x)) => push_copy(v, x),
+            (TypedValues::U64(v), ColumnDataType::Uint64, ValueRef::Uint64(x)) => push_copy(v, x),
+            (TypedValues::F32(v), ColumnDataType::Float32, ValueRef::Float32(x)) => push_copy(v, x),
+            (TypedValues::F64(v), ColumnDataType::Float64, ValueRef::Float64(x)) => push_copy(v, x),
+            (TypedValues::I32(v), ColumnDataType::Date, ValueRef::Date(x)) => push_copy(v, x.0),
+            (TypedValues::I64(v), ColumnDataType::DateTime, ValueRef::DateTime(x)) => {
+                push_copy(v, x.0)
+            }
             (
                 TypedValues::I64(v),
                 ColumnDataType::TimestampSecond,
@@ -298,7 +332,7 @@ impl TypedColumnBuf {
                 TypedValues::I64(v),
                 ColumnDataType::TimestampNanosecond,
                 ValueRef::TimestampNanosecond(x),
-            ) => v.push(x),
+            ) => push_copy(v, x),
             (TypedValues::Strings(v), ColumnDataType::String, ValueRef::String(x)) => {
                 let mut owned = self.spare_strings.pop().unwrap_or_default();
                 owned.push_str(x);
@@ -318,7 +352,7 @@ impl TypedColumnBuf {
                 TypedValues::Decimal128(v),
                 ColumnDataType::Decimal128 { precision, scale },
                 ValueRef::Decimal128(x),
-            ) if x.precision == precision && x.scale == scale => v.push(x),
+            ) if x.precision == precision && x.scale == scale => push_copy(v, x),
             _ => {
                 return Err(ColumnBufError::TypeMismatch {
                     expected: self.data_type,

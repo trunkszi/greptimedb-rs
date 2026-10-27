@@ -34,7 +34,12 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }
+criterion = { workspace = true }
 rcgen = { workspace = true }
+
+[[bench]]
+name = "greptimedb_hotpath_bench"
+harness = false
 
 [lints]
 workspace = true

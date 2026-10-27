@@ -11,6 +11,7 @@ use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use greptimedb::failover::CircuitPhase;
 use greptimedb::proto::v1;
 use greptimedb::threading::{stripe_shift, striped_endpoints};
 use greptimedb::{
@@ -163,6 +164,24 @@ fn disabled_breaker_and_bad_indexes_do_not_open_or_panic() {
     assert_eq!(policy.select_endpoint(at).expect("still open"), 0);
     assert!(policy.endpoint(0).is_some());
     assert!(policy.endpoint(3).is_none());
+}
+
+#[test]
+fn late_threshold_keeps_closed_degraded() {
+    let at = now();
+    let mut policy =
+        FailoverPolicy::new(["a", "b"]).with_circuit_breaker(0, Duration::from_secs(30));
+    policy.record_failure(0, at);
+    policy.record_failure(0, at);
+    let health = policy.health(0).expect("health");
+    assert!(health.circuit_opened_at.is_none());
+    assert!(health.consecutive_failures >= 2);
+    let mut policy = policy.with_circuit_breaker(2, Duration::from_secs(30));
+    assert_eq!(
+        policy.endpoint_phase(0, at),
+        Some(CircuitPhase::ClosedDegraded)
+    );
+    assert_eq!(policy.select_endpoint(at).expect("still eligible"), 0);
 }
 
 #[test]

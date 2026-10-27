@@ -21,6 +21,32 @@ const STREAM_PATH: &str = "/greptime.v1.GreptimeDatabase/HandleRequests";
 
 type StreamingCall = grpc::ClientStreamingCall<GreptimeRequest, GreptimeResponse>;
 
+/// Explicit lifecycle of one client-streaming insert.
+///
+/// `ActiveStreaming` accepts requests. `AwaitingFinalAck` has half-closed the
+/// request side. `Completed`, `Failed`, and `Aborted` are terminal: dropping the
+/// inserter does not cancel again.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InserterPhase {
+    /// Requests may be written on the open stream.
+    ActiveStreaming = 0,
+    /// The request stream is half-closed and the terminal response is outstanding.
+    AwaitingFinalAck = 1,
+    /// The server acknowledged affected rows.
+    Completed = 2,
+    /// Finish observed a transport or application failure.
+    Failed = 3,
+    /// The caller or drop cancelled the stream before a terminal acknowledgement.
+    Aborted = 4,
+}
+
+impl InserterPhase {
+    const fn retains_call(self) -> bool {
+        matches!(self, Self::ActiveStreaming)
+    }
+}
+
 /// A thread-affine ingestion stream whose final response acknowledges all requests.
 ///
 /// Dropping an unfinished stream cancels its HTTP/2 stream instead of waiting for
@@ -31,7 +57,7 @@ pub struct StreamInserter {
     header: RequestHeader,
     batches_sent: usize,
     rows_sent: usize,
-    finished: bool,
+    phase: InserterPhase,
     feedback: Option<StreamFeedback>,
     _not_send_sync: PhantomData<Rc<()>>,
 }
@@ -58,7 +84,7 @@ impl StreamInserter {
             header,
             batches_sent: 0,
             rows_sent: 0,
-            finished: false,
+            phase: InserterPhase::ActiveStreaming,
             feedback: None,
             _not_send_sync: PhantomData,
         })
@@ -72,6 +98,9 @@ impl StreamInserter {
     /// # Errors
     /// Returns counter overflow, terminal stream, transport or server errors.
     pub fn send_request(&mut self, request: greptime_request::Request) -> Result<()> {
+        if !self.phase.retains_call() {
+            return Err(Error::Stream("ingestion stream is closed".into()));
+        }
         let rows = request_rows(&request)
             .ok_or_else(|| Error::Protocol("stream request row count exceeds usize".into()))?;
         let batches_sent = self
@@ -224,7 +253,7 @@ impl StreamInserter {
     /// Returns transport, gRPC trailer, GreptimeDB application-header or missing
     /// affected-row errors. The consumed stream is cancelled on failed completion.
     pub fn finish(mut self) -> Result<u32> {
-        self.finished = true;
+        self.phase = InserterPhase::AwaitingFinalAck;
         let mut call = self
             .call
             .take()
@@ -245,13 +274,23 @@ impl StreamInserter {
         })();
         match &result {
             Ok(_) => {
+                self.phase = InserterPhase::Completed;
                 if let Some(feedback) = &mut self.feedback {
                     feedback.report(true);
                 }
             }
-            Err(error) => self.report_error(error),
+            Err(error) => {
+                self.phase = InserterPhase::Failed;
+                self.report_error(error);
+            }
         }
         result
+    }
+
+    /// Current lifecycle phase.
+    #[must_use]
+    pub const fn phase(&self) -> InserterPhase {
+        self.phase
     }
 
     fn report_error(&mut self, error: &Error) {
@@ -267,7 +306,7 @@ impl StreamInserter {
     /// # Errors
     /// Returns stream-control or cancellation failures.
     pub fn cancel(mut self) -> Result<()> {
-        self.finished = true;
+        self.phase = InserterPhase::Aborted;
         let mut call = self
             .call
             .take()
@@ -331,11 +370,12 @@ impl Client {
 
 impl Drop for StreamInserter {
     fn drop(&mut self) {
-        if !self.finished
+        if self.phase.retains_call()
             && let Some(mut call) = self.call.take()
         {
             // Drop cannot return an error; the call retains cancellation cleanup.
             drop(call.cancel());
+            self.phase = InserterPhase::Aborted;
         }
     }
 }
