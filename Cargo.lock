@@ -200,8 +200,7 @@ checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 [[package]]
 name = "cares"
 version = "0.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "337b65e581f0453ad985ab14266bf00e66122f36ab0699c5eb6b0a4bf5289e31"
+source = "git+https://github.com/trunkszi/cares-rs.git?branch=main#390e4b558accc51cc738896c0bd132225022a274"
 dependencies = [
  "bitflags",
  "cares-macros",
@@ -214,8 +213,7 @@ dependencies = [
 [[package]]
 name = "cares-macros"
 version = "0.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "69d8a283745b9e80e2274a84fb65cd3d9836d713149aee30defe8cd1e3ae59f7"
+source = "git+https://github.com/trunkszi/cares-rs.git?branch=main#390e4b558accc51cc738896c0bd132225022a274"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -225,8 +223,7 @@ dependencies = [
 [[package]]
 name = "cares-sys"
 version = "0.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "737fefb3e29ed80b868fdb976b699efffc6272626745992a90f1e25d92429bb5"
+source = "git+https://github.com/trunkszi/cares-rs.git?branch=main#390e4b558accc51cc738896c0bd132225022a274"
 dependencies = [
  "cc",
  "cmake",
@@ -395,7 +392,7 @@ dependencies = [
  "ciborium",
  "clap",
  "criterion-plot",
- "itertools 0.13.0",
+ "itertools",
  "num-traits",
  "oorandom",
  "page_size",
@@ -413,7 +410,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8d80a2f4f5b554395e47b5d8305bc3d27813bacb73493eb1001e8f76dae29ea"
 dependencies = [
  "cast",
- "itertools 0.13.0",
+ "itertools",
 ]
 
 [[package]]
@@ -623,8 +620,7 @@ dependencies = [
 [[package]]
 name = "grpc-codec-prost"
 version = "0.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "43478ef118ec9cf8225468de44d9556d2e1ef8952d1ebb3ca9ba659e6aa46b7b"
+source = "git+https://github.com/trunkszi/grpc-rs.git?branch=main#bb33bfa694843259869556c5b113ed1bd97abddc"
 dependencies = [
  "grpc-core",
  "prost",
@@ -634,8 +630,7 @@ dependencies = [
 [[package]]
 name = "grpc-core"
 version = "0.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b4e4e8411ecb2905257ee5d72d294998ff517813bb26703dd725edf5b14b2a7a"
+source = "git+https://github.com/trunkszi/grpc-rs.git?branch=main#bb33bfa694843259869556c5b113ed1bd97abddc"
 dependencies = [
  "base64",
  "flate2",
@@ -653,14 +648,12 @@ dependencies = [
 [[package]]
 name = "grpc-macros"
 version = "0.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb69910deb4404c9dcab236d864066d0b0b79615bf990a37517ca125396dc2f4"
+source = "git+https://github.com/trunkszi/grpc-rs.git?branch=main#bb33bfa694843259869556c5b113ed1bd97abddc"
 
 [[package]]
 name = "grpc-rs"
 version = "0.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "996dc3b8fe464dcbab54f19d59d7888873b0d8b5ea6e2e9f6efbf7a59d929ba6"
+source = "git+https://github.com/trunkszi/grpc-rs.git?branch=main#bb33bfa694843259869556c5b113ed1bd97abddc"
 dependencies = [
  "anyhow",
  "grpc-codec-prost",
@@ -674,8 +667,7 @@ dependencies = [
 [[package]]
 name = "grpc-rs-build"
 version = "0.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1c49658d83acd0e5dc6cbcae110af231982d6bc40662f6e7541566f67359a873"
+source = "git+https://github.com/trunkszi/grpc-rs.git?branch=main#bb33bfa694843259869556c5b113ed1bd97abddc"
 dependencies = [
  "prost-build",
  "thiserror",
@@ -769,15 +761,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "itertools"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b192c782037fadd9cfa75548310488aabdbf3d2da73885b31bd0abd03351285"
-dependencies = [
- "either",
-]
-
-[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -817,9 +800,8 @@ checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
 name = "liburing-proactor"
-version = "0.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d135ca94fe93bd1b997ae72520afdfd6079410b870ce71c499e76099cbb9a28b"
+version = "0.0.2"
+source = "git+https://github.com/trunkszi/liburing-rs.git?branch=main#69e1c5a25e404f37f467333a6578b5034f1d3ee6"
 dependencies = [
  "io-uring",
  "libc",
@@ -901,8 +883,7 @@ dependencies = [
 [[package]]
 name = "nexora-proto"
 version = "0.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f61efa322789e5d57fb5b05765aae2a086c889a1a0f093c6075f41fd589c278d"
+source = "git+https://github.com/trunkszi/nexora-rs.git?branch=main#1813fd3256f6c6b91ce1de849c003eb90b449cd9"
 dependencies = [
  "base64",
  "rcgen",
@@ -1054,7 +1035,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "03da047801ff44bb6a4d407d4860c05fd70bb81714e6b2f3812603d5b145b042"
 dependencies = [
  "heck",
- "itertools 0.14.0",
+ "itertools",
  "log",
  "multimap",
  "petgraph",
@@ -1073,7 +1054,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
