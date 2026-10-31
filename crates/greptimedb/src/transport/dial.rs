@@ -26,6 +26,12 @@ pub(super) fn error(error: UringError) -> io::Error {
         | UringError::Submit(errno)
         | UringError::Wait(errno)
         | UringError::Syscall { errno, .. } => io::Error::from_raw_os_error(errno),
+        UringError::SqThreadGone => io::Error::new(io::ErrorKind::BrokenPipe, error),
+        UringError::OpcodeNotAdmitted { .. }
+        | UringError::BlockingWaitUnavailable { .. }
+        | UringError::CancellationUnavailable { .. } => {
+            io::Error::new(io::ErrorKind::Unsupported, error)
+        }
         other => io::Error::other(other),
     }
 }
@@ -33,7 +39,6 @@ pub(super) fn error(error: UringError) -> io::Error {
 pub(super) fn ring() -> io::Result<Proactor> {
     Proactor::new(ProactorConfig {
         entries: RING_ENTRIES,
-        setup_flags: 0,
         staged_capacity: 256,
         max_cqe_batch: 64,
         ..ProactorConfig::default()
@@ -220,6 +225,38 @@ pub(super) fn unix(path: &Path, deadline: Option<Instant>) -> io::Result<UnixTra
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ring_errors_map_io_kinds() {
+        assert_eq!(
+            error(UringError::SqThreadGone).kind(),
+            io::ErrorKind::BrokenPipe
+        );
+        assert_eq!(
+            error(UringError::OpcodeNotAdmitted {
+                opcode: 0,
+                mode: "iopoll",
+            })
+            .kind(),
+            io::ErrorKind::Unsupported
+        );
+        assert_eq!(
+            error(UringError::BlockingWaitUnavailable { mode: "sqpoll" }).kind(),
+            io::ErrorKind::Unsupported
+        );
+        assert_eq!(
+            error(UringError::CancellationUnavailable { mode: "sqpoll" }).kind(),
+            io::ErrorKind::Unsupported
+        );
+        assert_eq!(
+            error(UringError::RingInit(libc::EINVAL)).raw_os_error(),
+            Some(libc::EINVAL)
+        );
+        assert_eq!(
+            error(UringError::CompletionsDropped).kind(),
+            io::ErrorKind::Other
+        );
+    }
 
     #[test]
     fn lifecycle_unix_backlog_timeout_retires_connect_before_retry() -> io::Result<()> {
