@@ -1,0 +1,90 @@
+[workspace]
+members = [
+    "crates/greptimedb-proto",
+    "crates/greptimedb-macros",
+    "crates/greptimedb",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/trunkszi/greptimedb-rs"
+
+[workspace.dependencies]
+greptimedb-proto = { version = "0.0.1", path = "crates/greptimedb-proto" }
+greptimedb-macros = { version = "0.0.1", path = "crates/greptimedb-macros" }
+grpc = { git = "https://github.com/trunkszi/grpc-rs.git", branch = "main", package = "grpc-rs" }
+grpc-core = { git = "https://github.com/trunkszi/grpc-rs.git", branch = "main" }
+grpc-macros = { git = "https://github.com/trunkszi/grpc-rs.git", branch = "main" }
+grpc-build = { git = "https://github.com/trunkszi/grpc-rs.git", branch = "main", package = "grpc-rs-build", default-features = false }
+prost = { version = "0.14", default-features = false, features = ["std"] }
+prost-types = { version = "0.14", default-features = false, features = ["std"] }
+prost-build = { version = "0.14" }
+thiserror = { version = "2.0" }
+socket2 = { version = "0.6" }
+libc = { version = "0.2" }
+liburing = { git = "https://github.com/trunkszi/liburing-rs.git", branch = "main" }
+uarch = { git = "https://github.com/trunkszi/uarch-rs.git", branch = "main", default-features = false, features = ["std"] }
+cares = { git = "https://github.com/trunkszi/cares-rs.git", branch = "main" }
+base64 = { version = "0.22" }
+serde = { version = "1.0", features = ["derive"] }
+sonic-rs = { version = "0.5.10" }
+anyhow = { version = "1.0" }
+criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-native-certs = { version = "0.8" }
+rustls-pemfile = { version = "2" }
+rcgen = { version = "0.13", default-features = false, features = ["ring", "crypto"] }
+arrow-schema = { version = "60", default-features = false }
+arrow-array = { version = "60", default-features = false }
+arrow-buffer = { version = "60", default-features = false }
+arrow-ipc = { version = "60", default-features = false, features = ["lz4", "zstd"] }
+syn = { version = "2", features = ["full", "extra-traits"] }
+quote = { version = "1" }
+proc-macro2 = { version = "1" }
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+clone_on_copy = "deny"
+redundant_clone = "deny"
+implicit_clone = "deny"
+unnecessary_to_owned = "deny"
+cloned_instead_of_copied = "deny"
+inefficient_to_string = "deny"
+undocumented_unsafe_blocks = "deny"
+missing_safety_doc = "deny"
+missing_errors_doc = "deny"
+missing_panics_doc = "deny"
+expl_impl_clone_on_copy = "deny"
+non_canonical_clone_impl = "deny"
+useless_conversion = "deny"
+useless_asref = "deny"
+to_string_in_format_args = "deny"
+manual_string_new = "deny"
+let_underscore_must_use = "deny"
+todo = "deny"
+unimplemented = "deny"
+
+# Dev profile: skip unused full DWARF debug info; incremental conflicts with sccache.
+[profile.dev]
+opt-level = 0
+debug = false
+strip = "debuginfo"
+incremental = false
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.dev.build-override]
+debug = false
+
+[profile.test]
+inherits = "dev"
+opt-level = 0
+debug = false
+strip = "debuginfo"
+incremental = false

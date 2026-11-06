@@ -1,0 +1,57 @@
+name: greptimedb-rs CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+  CARGO_BUILD_JOBS: '2'
+  CMAKE_BUILD_PARALLEL_LEVEL: '2'
+  RUST_BACKTRACE: '1'
+  RUST_TEST_THREADS: '1'
+  GREPTIMEDB_E2E_REQUIRED: '1'
+
+jobs:
+  ci:
+    name: fmt, clippy, test, docs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v5
+
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes build-essential cmake pkg-config libclang-dev protobuf-compiler
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache Cargo registry and build output
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace --locked
+
+      - name: Documentation
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
